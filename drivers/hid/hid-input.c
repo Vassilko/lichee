@@ -24,7 +24,7 @@
  * e-mail - mail your message to <vojtech@ucw.cz>, or by paper mail:
  * Vojtech Pavlik, Simunkova 1594, Prague 8, 182 00 Czech Republic
  */
-
+#include <linux/types.h>
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/kernel.h>
@@ -69,6 +69,55 @@ static const struct {
 		&max, EV_ABS, (c))
 #define map_key_clear(c)	hid_map_usage_clear(hidinput, usage, &bit, \
 		&max, EV_KEY, (c))
+
+static int hwcalib_x=0;
+module_param(hwcalib_x, int, 0644);
+MODULE_PARM_DESC(hwcalib_x, "Calibrate value dx");
+
+static int hwcalib_y=0;
+module_param(hwcalib_y, int, 0644);
+MODULE_PARM_DESC(hwcalib_y, "Calibrate value dy");
+
+static bool hw_swapXY=true;
+module_param(hw_swapXY, bool, 0644);
+MODULE_PARM_DESC(hw_swapXY, "swap XY");
+
+static int hw_x1=244;
+module_param(hw_x1, int, 0644);
+MODULE_PARM_DESC(hw_x1, "left-down x value");
+
+static int hw_y1=3831;
+module_param(hw_y1, int, 0644);
+MODULE_PARM_DESC(hw_y1, "left-down x value");
+
+static int hw_x3=3919;
+module_param(hw_x3, int, 0644);
+MODULE_PARM_DESC(hw3_x1, "Right-up x value");
+
+static int hw_y3=363;
+module_param(hw_y3, int, 0644);
+MODULE_PARM_DESC(hw_y3, "Right-up y value");
+
+static int hwmin_x=-190;
+module_param(hwmin_x, int, 0644);
+MODULE_PARM_DESC(hwmin_x, "min x calibration value");
+
+static int hwmax_x=100;
+module_param(hwmax_x, int, 0644);
+MODULE_PARM_DESC(hwmax_x, "max x calibration value");
+
+static int hwmin_y=-300;
+module_param(hwmin_y, int, 0644);
+MODULE_PARM_DESC(hwmin_y, "min y calibration value");
+
+static int hwmax_y=180;
+module_param(hwmax_y, int, 0644);
+MODULE_PARM_DESC(hwmax_y, "max y calibration value");
+
+static bool hw_debug=false;
+module_param(hw_debug, bool, 0644);
+MODULE_PARM_DESC(hw_debug, "show debug value");
+
 
 static bool match_scancode(struct hid_usage *usage,
 			   unsigned int cur_idx, unsigned int scancode)
@@ -279,8 +328,7 @@ static enum power_supply_property hidinput_battery_props[] = {
 	POWER_SUPPLY_PROP_ONLINE,
 	POWER_SUPPLY_PROP_CAPACITY,
 	POWER_SUPPLY_PROP_MODEL_NAME,
-	POWER_SUPPLY_PROP_STATUS,
-	POWER_SUPPLY_PROP_SCOPE,
+	POWER_SUPPLY_PROP_STATUS
 };
 
 #define HID_BATTERY_QUIRK_PERCENT	(1 << 0) /* always reports percent */
@@ -289,9 +337,6 @@ static enum power_supply_property hidinput_battery_props[] = {
 static const struct hid_device_id hid_battery_quirks[] = {
 	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_APPLE,
 			       USB_DEVICE_ID_APPLE_ALU_WIRELESS_2011_ANSI),
-	  HID_BATTERY_QUIRK_PERCENT | HID_BATTERY_QUIRK_FEATURE },
-	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_APPLE,
-		USB_DEVICE_ID_APPLE_ALU_WIRELESS_ANSI),
 	  HID_BATTERY_QUIRK_PERCENT | HID_BATTERY_QUIRK_FEATURE },
 	{}
 };
@@ -346,10 +391,6 @@ static int hidinput_get_battery_property(struct power_supply *psy,
 
 	case POWER_SUPPLY_PROP_STATUS:
 		val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
-		break;
-
-	case POWER_SUPPLY_PROP_SCOPE:
-		val->intval = POWER_SUPPLY_SCOPE_DEVICE;
 		break;
 
 	default:
@@ -410,8 +451,6 @@ static bool hidinput_setup_battery(struct hid_device *dev, unsigned report_type,
 		kfree(battery->name);
 		battery->name = NULL;
 	}
-
-	power_supply_powers(battery, &dev->dev);
 
 out:
 	return true;
@@ -924,11 +963,53 @@ ignore:
 
 }
 
+
+static int touchscreen_calibration_x(struct hid_device *hid,int value){
+	int hw_length_x;
+	int hwCalibrationLength;
+	hw_length_x=hw_x3-hw_x1;
+	if(hw_length_x<=0){
+		return value;
+	};
+
+	if(value<hw_x1){
+		value=hw_x1;
+	};
+	if(value>hw_x3&&hw_x3>0){
+		value=hw_x3;
+	};
+        hwCalibrationLength=hwmax_x-hwmin_x;
+        if(hwCalibrationLength<=0){
+                return value;
+        }
+	return value+hwmin_x+(value-hw_x1)/(hw_length_x/hwCalibrationLength);
+}
+
+static int touchscreen_calibration_y(struct hid_device *hid,int value){
+        int hw_length_y;
+	int hwCalibrationLength;
+	hw_length_y=hw_y1-hw_y3;
+        if(hw_length_y<=0){
+                return value;
+        }
+
+        if(value<hw_y3){
+                value=hw_y3;
+        }
+        if(value>hw_y1&&hw_y1>0){
+                value=hw_y1;
+        }
+        hwCalibrationLength=hwmax_y-hwmin_y;
+        if(hwCalibrationLength<=0){
+                return value;
+        }
+	return value+hwmin_y+(value-hw_y3)/(hw_length_y/hwCalibrationLength);
+}
+
 void hidinput_hid_event(struct hid_device *hid, struct hid_field *field, struct hid_usage *usage, __s32 value)
 {
 	struct input_dev *input;
 	unsigned *quirks = &hid->quirks;
-
 	if (!field->hidinput)
 		return;
 
@@ -1010,6 +1091,35 @@ void hidinput_hid_event(struct hid_device *hid, struct hid_field *field, struct 
 	/* report the usage code as scancode if the key status has changed */
 	if (usage->type == EV_KEY && !!test_bit(usage->code, input->key) != value)
 		input_event(input, EV_MSC, MSC_SCAN, usage->hid);
+	if(hw_debug){
+		hid_err(hid,"Debug value %d %d\n",usage->hid,value);
+	}
+	if (usage->type == EV_ABS)
+	{
+		if (usage->hid == HID_GD_X) {
+		    if(hw_swapXY){
+			usage->code = 1;        // vs 0 (X becomes Y)
+			value = 4096 - value+hwcalib_x;
+			value=touchscreen_calibration_y(hid,value);
+		    } else{
+			value=touchscreen_calibration_x(hid,value);
+		    }
+    		    if(hw_debug){
+            		hid_err(hid,"Debug new value %s %d %d\n","HID_GD_X",usage->hid,value);
+    		    }
+		} else if (usage->hid == HID_GD_Y) {
+			if(hw_swapXY){
+			    usage->code = 0;        // vs 1 (Y becomes X)
+			    value=value+hwcalib_y;
+			    value=touchscreen_calibration_x(hid,value);
+			} else{
+			    value=touchscreen_calibration_y(hid,value);
+			}
+    			if(hw_debug){
+            		    hid_err(hid,"Debug new value %s %d %d\n","HID_GD_Y",usage->hid,value);
+    			}
+ 		}
+	}
 
 	input_event(input, usage->type, usage->code, value);
 
